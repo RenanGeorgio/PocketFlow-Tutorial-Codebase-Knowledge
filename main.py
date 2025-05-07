@@ -14,6 +14,10 @@ DEFAULT_INCLUDE_PATTERNS = {
 }
 
 DEFAULT_EXCLUDE_PATTERNS = {
+    "terraform-namespace/*", "terraform/*", "scripts/*", "grpc/protofiles/*", "garden-templates/*",
+    "libs/athena/*", "libs/cerberus/*", "libs/test-lib/*", "libs/sender/*",
+    "apps/athena/*", "apps/gatekeeper/*",
+    "apps/integrations/shopify/*", "apps/integrations/woocommerce/*",
     "assets/*", "data/*", "examples/*", "images/*", "public/*", "static/*", "temp/*",
     "docs/*", 
     "venv/*", ".venv/*", "*test*", "tests/*", "docs/*", "examples/*", "v1/*",
