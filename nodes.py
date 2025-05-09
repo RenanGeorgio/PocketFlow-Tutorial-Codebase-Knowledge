@@ -88,6 +88,7 @@ class IdentifyAbstractions(Node):
         language = shared.get("language", "english")  # Get language
         use_cache = shared.get("use_cache", True)  # Get use_cache flag, default to True
         max_abstraction_num = shared.get("max_abstraction_num", 10)  # Get max_abstraction_num, default to 10
+        target_list = shared.get("target_list", set())  # Get target list
 
         # Helper to create context from files, respecting limits (basic example)
         def create_llm_context(files_data):
@@ -105,6 +106,14 @@ class IdentifyAbstractions(Node):
         file_listing_for_prompt = "\n".join(
             [f"- {idx} # {path}" for idx, path in file_info]
         )
+
+        # If we have target items, add them to the prompt
+        target_emphasis = ""
+        if target_list:
+            target_emphasis = f"\nIMPORTANT: Give special emphasis to code related to the following targets:\n" + \
+                            "\n".join([f"- {target}" for target in sorted(target_list)]) + \
+                            "\nMark abstractions highly relevant to these targets with 'is_key: true' in the output.\n"
+
         return (
             context,
             file_listing_for_prompt,
@@ -113,7 +122,8 @@ class IdentifyAbstractions(Node):
             language,
             use_cache,
             max_abstraction_num,
-        )  # Return all parameters
+            target_emphasis,
+        )
 
     def exec(self, prep_res):
         (
@@ -124,7 +134,8 @@ class IdentifyAbstractions(Node):
             language,
             use_cache,
             max_abstraction_num,
-        ) = prep_res  # Unpack all parameters
+            target_emphasis,
+        ) = prep_res
         print(f"Identifying abstractions using LLM...")
 
         # Add language instruction and hints only if not English
@@ -133,7 +144,6 @@ class IdentifyAbstractions(Node):
         desc_lang_hint = ""
         if language.lower() != "english":
             language_instruction = f"IMPORTANT: Generate the `name` and `description` for each abstraction in **{language.capitalize()}** language. Do NOT use English for these fields.\n\n"
-            # Keep specific hints here as name/description are primary targets
             name_lang_hint = f" (value in {language.capitalize()})"
             desc_lang_hint = f" (value in {language.capitalize()})"
 
@@ -145,11 +155,12 @@ Codebase Context:
 
 {language_instruction}Analyze the codebase context.
 Identify the top 5-{max_abstraction_num} core most important abstractions to help those new to the codebase.
-
+{target_emphasis}
 For each abstraction, provide:
 1. A concise `name`{name_lang_hint}.
 2. A beginner-friendly `description` explaining what it is with a simple analogy, in around 100 words{desc_lang_hint}.
 3. A list of relevant `file_indices` (integers) using the format `idx # path/comment`.
+4. If this abstraction is particularly relevant to any of the target items, mark it with `is_key: true`.
 
 List of file indices and paths present in the context:
 {file_listing_for_prompt}
@@ -165,6 +176,7 @@ Format the output as a YAML list of dictionaries:
   file_indices:
     - 0 # path/to/file1.py
     - 3 # path/to/related.py
+  is_key: true  # Only if highly relevant to target items
 - name: |
     Query Optimization{name_lang_hint}
   description: |
@@ -173,7 +185,8 @@ Format the output as a YAML list of dictionaries:
     - 5 # path/to/another.js
 # ... up to {max_abstraction_num} abstractions
 ```"""
-        response = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0))  # Use cache only if enabled and not retrying
+
+        response = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0))
 
         # --- Validation ---
         yaml_str = response.strip().split("```yaml")[1].split("```")[0].strip()
@@ -183,7 +196,8 @@ Format the output as a YAML list of dictionaries:
             raise ValueError("LLM Output is not a list")
 
         validated_abstractions = []
-        for item in abstractions:
+        key_abstractions = []  # Track indices of key abstractions
+        for idx, item in enumerate(abstractions):
             if not isinstance(item, dict) or not all(
                 k in item for k in ["name", "description", "file_indices"]
             ):
@@ -217,24 +231,27 @@ Format the output as a YAML list of dictionaries:
                     )
 
             item["files"] = sorted(list(set(validated_indices)))
+            # Check if this is a key abstraction
+            if item.get("is_key", False):
+                key_abstractions.append(idx)
+                
             # Store only the required fields
             validated_abstractions.append(
                 {
                     "name": item["name"],  # Potentially translated name
-                    "description": item[
-                        "description"
-                    ],  # Potentially translated description
+                    "description": item["description"],  # Potentially translated description
                     "files": item["files"],
+                    "is_key": item.get("is_key", False),  # Track if this is a key abstraction
                 }
             )
 
-        print(f"Identified {len(validated_abstractions)} abstractions.")
-        return validated_abstractions
+        print(f"Identified {len(validated_abstractions)} abstractions ({len(key_abstractions)} key abstractions).")
+        return validated_abstractions, key_abstractions
 
     def post(self, shared, prep_res, exec_res):
-        shared["abstractions"] = (
-            exec_res  # List of {"name": str, "description": str, "files": [int]}
-        )
+        abstractions, key_abstractions = exec_res
+        shared["abstractions"] = abstractions
+        shared["key_abstractions"] = key_abstractions
 
 
 class AnalyzeRelationships(Node):
@@ -405,6 +422,19 @@ Now, provide the YAML output:
         # Structure is now {"summary": str, "details": [{"from": int, "to": int, "label": str}]}
         # Summary and label might be translated
         shared["relationships"] = exec_res
+        
+        # Track key relationships (those involving key abstractions)
+        key_abstractions = shared.get("key_abstractions", [])
+        key_relationships = []
+        
+        # A relationship is key if either the source or target abstraction is key
+        for idx, rel in exec_res["details"]:
+            if rel["from"] in key_abstractions or rel["to"] in key_abstractions:
+                key_relationships.append(idx)
+        
+        shared["key_relationships"] = key_relationships
+        if key_relationships:
+            print(f"Identified {len(key_relationships)} key relationships involving target-focused abstractions.")
 
 
 class OrderChapters(Node):
@@ -544,6 +574,9 @@ class WriteChapters(BatchNode):
         project_name = shared["project_name"]
         language = shared.get("language", "english")
         use_cache = shared.get("use_cache", True)  # Get use_cache flag, default to True
+        key_abstractions = shared.get("key_abstractions", [])  # Get key abstractions
+        key_relationships = shared.get("key_relationships", [])  # Get key relationships
+        target_list = shared.get("target_list", set())  # Get target list
 
         # Get already written chapters to provide context
         # We store them temporarily during the batch run, not in shared memory yet
@@ -603,6 +636,14 @@ class WriteChapters(BatchNode):
                     next_idx = chapter_order[i + 1]
                     next_chapter = chapter_filenames[next_idx]
 
+                # Add key abstraction and target-related information
+                is_key = abstraction_index in key_abstractions
+                # Find relationships where this abstraction is involved
+                related_key_relationships = []
+                for rel_idx, rel in enumerate(shared["relationships"]["details"]):
+                    if rel_idx in key_relationships and (rel["from"] == abstraction_index or rel["to"] == abstraction_index):
+                        related_key_relationships.append(rel)
+
                 items_to_process.append(
                     {
                         "chapter_num": i + 1,
@@ -616,6 +657,9 @@ class WriteChapters(BatchNode):
                         "next_chapter": next_chapter,  # Add next chapter info (uses potentially translated name)
                         "language": language,  # Add language for multi-language support
                         "use_cache": use_cache, # Pass use_cache flag
+                        "is_key": is_key,  # Add flag for key abstractions
+                        "related_key_relationships": related_key_relationships,  # Add related key relationships
+                        "target_list": target_list,  # Add target list for emphasis
                         # previous_chapters_summary will be added dynamically in exec
                     }
                 )
@@ -639,7 +683,11 @@ class WriteChapters(BatchNode):
         project_name = item.get("project_name")
         language = item.get("language", "english")
         use_cache = item.get("use_cache", True) # Read use_cache from item
-        print(f"Writing chapter {chapter_num} for: {abstraction_name} using LLM...")
+        is_key = item.get("is_key", False)
+        related_key_relationships = item.get("related_key_relationships", [])
+        target_list = item.get("target_list", set())
+
+        print(f"Writing {'key ' if is_key else ''}chapter {chapter_num} for: {abstraction_name} using LLM...")
 
         # Prepare file context string from the map
         file_context_str = "\n\n".join(
@@ -653,6 +701,7 @@ class WriteChapters(BatchNode):
 
         # Add language instruction and context notes only if not English
         language_instruction = ""
+        target_instruction = ""
         concept_details_note = ""
         structure_note = ""
         prev_summary_note = ""
@@ -675,13 +724,24 @@ class WriteChapters(BatchNode):
             )
             tone_note = f" (appropriate for {lang_cap} readers)"
 
+        if is_key:
+            target_matches = [t for t in target_list if any(t.lower() in f.lower() for f in item["related_files_content_map"].keys())]
+            target_instruction = f"""IMPORTANT TARGET FOCUS:
+This is a key chapter that is particularly relevant to the following targets: {', '.join(target_list)}
+{'Specifically, this chapter involves these target items: ' + ', '.join(target_matches) if target_matches else ''}
+Please give special emphasis to how this abstraction relates to and impacts these target areas.
+Highlight any implementation details, configuration options, or usage patterns that are particularly relevant."""
+
         prompt = f"""
-{language_instruction}Write a very beginner-friendly tutorial chapter (in Markdown format) for the project `{project_name}` about the concept: "{abstraction_name}". This is Chapter {chapter_num}.
+{language_instruction}
+{target_instruction}
+Write a very beginner-friendly tutorial chapter (in Markdown format) for the project `{project_name}` about the concept: "{abstraction_name}". This is Chapter {chapter_num}.
 
 Concept Details{concept_details_note}:
 - Name: {abstraction_name}
 - Description:
 {abstraction_description}
+{'- This is a KEY abstraction particularly relevant to the target areas.' if is_key else ''}
 
 Complete Tutorial Structure{structure_note}:
 {item["full_chapter_listing"]}
@@ -691,6 +751,8 @@ Context from previous chapters{prev_summary_note}:
 
 Relevant Code Snippets (Code itself remains unchanged):
 {file_context_str if file_context_str else "No specific code snippets provided for this abstraction."}
+
+{'Key Relationships to Emphasize:' + '\\n'.join([f"- {r['label']}" for r in related_key_relationships]) if related_key_relationships else ''}
 
 Instructions for the chapter (Generate content in {language.capitalize()} unless specified otherwise):
 - Start with a clear heading (e.g., `# Chapter {chapter_num}: {abstraction_name}`). Use the provided concept name.
@@ -724,6 +786,19 @@ Instructions for the chapter (Generate content in {language.capitalize()} unless
 Now, directly provide a super beginner-friendly Markdown output (DON'T need ```markdown``` tags):
 """
         chapter_content = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0)) # Use cache only if enabled and not retrying
+
+        # Add emphasis notice for key abstractions
+        if is_key:
+            emphasis_note = "\n\n> ⭐ **Target Focus**: This chapter covers a key abstraction that is particularly relevant to understanding the target areas of interest.\n"
+            if chapter_content.startswith("# "):
+                # Insert after the first heading
+                lines = chapter_content.split("\n")
+                heading = lines[0]
+                rest = "\n".join(lines[1:])
+                chapter_content = f"{heading}{emphasis_note}{rest}"
+            else:
+                chapter_content = emphasis_note + chapter_content
+
         # Basic validation/cleanup
         actual_heading = f"# Chapter {chapter_num}: {abstraction_name}"  # Use potentially translated name
         if not chapter_content.strip().startswith(f"# Chapter {chapter_num}"):

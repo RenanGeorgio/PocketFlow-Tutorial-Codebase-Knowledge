@@ -46,6 +46,8 @@ def main():
     parser.add_argument("--no-cache", action="store_true", help="Disable LLM response caching (default: caching enabled)")
     # Add max_abstraction_num parameter to control the number of abstractions
     parser.add_argument("--max-abstractions", type=int, default=10, help="Maximum number of abstractions to identify (default: 10)")
+    # Add target-list parameter for emphasis on specific areas
+    parser.add_argument("--target-list", nargs="+", help="List of target files, folders, paths, extensions, or libraries to emphasize in the analysis (e.g., 'sd/*' 'discovery.go' '@prometheus/client')")
 
     args = parser.parse_args()
 
@@ -64,6 +66,9 @@ def main():
         "github_token": github_token,
         "output_dir": args.output, # Base directory for CombineTutorial output
 
+        # Add target list for emphasis in analysis
+        "target_list": set(args.target_list) if args.target_list else set(),
+        
         # Add include/exclude patterns and max file size
         "include_patterns": set(args.include) if args.include else DEFAULT_INCLUDE_PATTERNS,
         "exclude_patterns": set(args.exclude) if args.exclude else DEFAULT_EXCLUDE_PATTERNS,
@@ -84,12 +89,18 @@ def main():
         "relationships": {},
         "chapter_order": [],
         "chapters": [],
-        "final_output_dir": None
+        "final_output_dir": None,
+
+        # New keys for tracking target-focused information
+        "key_abstractions": [],  # Will store indices of abstractions that are particularly relevant to target list
+        "key_relationships": [], # Will store relationships that are particularly relevant to target list
     }
 
-    # Display starting message with repository/directory and language
+    # Display starting message with repository/directory, language, and targets
     print(f"Starting tutorial generation for: {args.repo or args.dir} in {args.language.capitalize()} language")
     print(f"LLM caching: {'Disabled' if args.no_cache else 'Enabled'}")
+    if args.target_list:
+        print(f"Target emphasis on: {', '.join(args.target_list)}")
 
     # Create the flow instance
     tutorial_flow = create_tutorial_flow()
