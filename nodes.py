@@ -5,6 +5,7 @@ from pocketflow import Node, BatchNode
 from utils.crawl_github_files import crawl_github_files
 from utils.call_llm import call_llm
 from utils.crawl_local_files import crawl_local_files
+from utils.token_manager import TokenManager
 
 
 # Helper to get content for specific file indices
@@ -26,12 +27,16 @@ class FetchRepo(Node):
         project_name = shared.get("project_name")
 
         if not project_name:
-            # Basic name derivation from URL or directory
+            # Extract project name from repo URL or directory
             if repo_url:
-                project_name = repo_url.split("/")[-1].replace(".git", "")
+                project_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
             else:
                 project_name = os.path.basename(os.path.abspath(local_dir))
             shared["project_name"] = project_name
+
+        # Initialize token manager
+        self.token_manager = TokenManager()
+        shared["token_manager"] = self.token_manager
 
         # Get file patterns directly from shared
         include_patterns = shared["include_patterns"]
@@ -74,11 +79,23 @@ class FetchRepo(Node):
         files_list = list(result.get("files", {}).items())
         if len(files_list) == 0:
             raise (ValueError("Failed to fetch files"))
+
+        # Create hierarchical context using token manager
+        context = self.token_manager.create_hierarchical_context(files_list)
+        
         print(f"Fetched {len(files_list)} files.")
-        return files_list
+        print(f"Created hierarchical context with {len(context['levels'])} levels")
+        print(f"Available tokens: {self.token_manager.get_available_tokens()}")
+        
+        # Store both full files list and hierarchical context
+        return {
+            "files": files_list,
+            "hierarchical_context": context
+        }
 
     def post(self, shared, prep_res, exec_res):
-        shared["files"] = exec_res  # List of (path, content) tuples
+        shared["files"] = exec_res["files"]
+        shared["hierarchical_context"] = exec_res["hierarchical_context"]
 
 
 class IdentifyAbstractions(Node):
@@ -89,19 +106,32 @@ class IdentifyAbstractions(Node):
         use_cache = shared.get("use_cache", True)  # Get use_cache flag, default to True
         max_abstraction_num = shared.get("max_abstraction_num", 10)  # Get max_abstraction_num, default to 10
         target_list = shared.get("target_list", set())  # Get target list
+        hierarchical_context = shared["hierarchical_context"]
+        token_manager = shared["token_manager"]
 
-        # Helper to create context from files, respecting limits (basic example)
-        def create_llm_context(files_data):
-            context = ""
-            file_info = []  # Store tuples of (index, path)
-            for i, (path, content) in enumerate(files_data):
-                entry = f"--- File Index {i}: {path} ---\n{content}\n\n"
-                context += entry
-                file_info.append((i, path))
+        # Create context from hierarchical structure
+        def create_llm_context():
+            context_parts = []
+            file_info = []
+            idx = 0
 
-            return context, file_info  # file_info is list of (index, path)
+            # Process each level in the hierarchy
+            for depth, level_files in sorted(hierarchical_context["levels"].items()):
+                context_parts.append(f"\n--- Level {depth} Files ---\n")
+                
+                for file_data in level_files:
+                    path = file_data["path"]
+                    content = file_data["content"]
+                    content_type = file_data["type"]
+                    
+                    context_parts.append(f"File {idx} ({content_type}): {path}\n{content}\n")
+                    file_info.append((idx, path))
+                    idx += 1
 
-        context, file_info = create_llm_context(files_data)
+            return "\n".join(context_parts), file_info
+
+        context, file_info = create_llm_context()
+
         # Format file info for the prompt (comment is just a hint for LLM)
         file_listing_for_prompt = "\n".join(
             [f"- {idx} # {path}" for idx, path in file_info]
@@ -122,7 +152,7 @@ class IdentifyAbstractions(Node):
             language,
             use_cache,
             max_abstraction_num,
-            target_emphasis,
+            target_emphasis
         )
 
     def exec(self, prep_res):
@@ -134,8 +164,8 @@ class IdentifyAbstractions(Node):
             language,
             use_cache,
             max_abstraction_num,
-            target_emphasis,
-        ) = prep_res
+            target_emphasis
+        ) = prep_res  # Unpack all parameters
         print(f"Identifying abstractions using LLM...")
 
         # Add language instruction and hints only if not English
@@ -186,7 +216,7 @@ Format the output as a YAML list of dictionaries:
 # ... up to {max_abstraction_num} abstractions
 ```"""
 
-        response = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0))
+        response = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0)) # Use cache only if enabled and not retrying
 
         # --- Validation ---
         yaml_str = response.strip().split("```yaml")[1].split("```")[0].strip()
@@ -250,7 +280,7 @@ Format the output as a YAML list of dictionaries:
 
     def post(self, shared, prep_res, exec_res):
         abstractions, key_abstractions = exec_res
-        shared["abstractions"] = abstractions
+        shared["abstractions"] = abstractions # List of {"name": str, "description": str, "files": [int]}
         shared["key_abstractions"] = key_abstractions
 
 
