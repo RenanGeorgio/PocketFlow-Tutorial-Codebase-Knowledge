@@ -34,7 +34,7 @@ class FetchRepo(Node):
                 project_name = os.path.basename(os.path.abspath(local_dir))
             shared["project_name"] = project_name
 
-        # Initialize token manager
+        # Initialize token manager with target list awareness
         self.token_manager = TokenManager()
         shared["token_manager"] = self.token_manager
 
@@ -43,6 +43,9 @@ class FetchRepo(Node):
         exclude_patterns = shared["exclude_patterns"]
         max_file_size = shared["max_file_size"]
 
+        # Get target list from shared context
+        target_list = shared.get("target_list", set())
+        
         return {
             "repo_url": repo_url,
             "local_dir": local_dir,
@@ -51,6 +54,7 @@ class FetchRepo(Node):
             "exclude_patterns": exclude_patterns,
             "max_file_size": max_file_size,
             "use_relative_paths": True,
+            "target_list": target_list  # Pass target list
         }
 
     def exec(self, prep_res):
@@ -80,11 +84,15 @@ class FetchRepo(Node):
         if len(files_list) == 0:
             raise (ValueError("Failed to fetch files"))
 
-        # Create hierarchical context using token manager
-        context = self.token_manager.create_hierarchical_context(files_list)
+        # Create hierarchical context using token manager with target list
+        context = self.token_manager.create_hierarchical_context(
+            files_list,
+            target_list=prep_res["target_list"]
+        )
         
         print(f"Fetched {len(files_list)} files.")
         print(f"Created hierarchical context with {len(context['levels'])} levels")
+        print(f"Found {len(context['target_focused_files'])} files relevant to target list")
         print(f"Available tokens: {self.token_manager.get_available_tokens()}")
         
         # Store both full files list and hierarchical context

@@ -14,6 +14,7 @@ class TokenManager:
         self.max_tokens = max_tokens
         self.current_tokens = 0
         self.content_tokens: Dict[str, int] = {}
+        self.target_priorities: Dict[str, int] = {}  # Store priority scores for files
 
     def count_tokens(self, text: str) -> int:
         """Count the number of tokens in a text."""
@@ -43,17 +44,31 @@ class TokenManager:
         """Get the number of tokens still available."""
         return self.max_tokens - self.current_tokens
 
+    def set_target_priorities(self, target_list: set) -> None:
+        """Set priority scores for files based on target list.
+        
+        Args:
+            target_list: Set of target patterns to prioritize
+        """
+        self.target_priorities.clear()
+        for path in self.content_tokens.keys():
+            priority = sum(1 for target in target_list if target.lower() in path.lower())
+            self.target_priorities[path] = priority
+
     def create_hierarchical_context(self, files_data: List[Tuple[str, str]], 
-                                  max_files_per_level: int = 50) -> Dict[str, Any]:
+                                  max_files_per_level: int = 50,
+                                  target_list: set = None) -> Dict[str, Any]:
         """Create a hierarchical context from files data.
         
         Args:
             files_data: List of (path, content) tuples
             max_files_per_level: Maximum number of files to include at each level
-        
-        Returns:
-            Dict containing hierarchical context information
+            target_list: Optional set of target patterns to prioritize
         """
+        # Update priorities if target list is provided
+        if target_list:
+            self.set_target_priorities(target_list)
+
         # Group files by directory level
         hierarchy: Dict[str, List[Tuple[str, str]]] = {}
         
@@ -67,14 +82,16 @@ class TokenManager:
         context = {
             "levels": {},
             "file_summaries": {},
-            "total_files": len(files_data)
+            "total_files": len(files_data),
+            "target_focused_files": []  # Track files relevant to targets
         }
 
         for depth in sorted(hierarchy.keys()):
             level_files = hierarchy[depth]
             
-            # Sort files by size and importance (e.g., prioritize non-test files)
+            # Sort files by priority, size and importance
             level_files.sort(key=lambda x: (
+                -self.target_priorities.get(x[0], 0),  # Higher priority first
                 "test" in x[0].lower(),  # Deprioritize test files
                 -len(x[1])  # Prioritize larger files
             ))
@@ -86,20 +103,28 @@ class TokenManager:
             for path, content in selected_files:
                 # Try to add full content
                 if self.add_content(f"full_{path}", content):
-                    level_context.append({
+                    entry = {
                         "path": path,
                         "type": "full",
-                        "content": content
-                    })
+                        "content": content,
+                        "priority": self.target_priorities.get(path, 0)
+                    }
+                    level_context.append(entry)
+                    if entry["priority"] > 0:
+                        context["target_focused_files"].append(path)
                 else:
                     # If full content doesn't fit, add a summary
                     summary = self._create_file_summary(path, content)
                     if self.add_content(f"summary_{path}", summary):
-                        level_context.append({
+                        entry = {
                             "path": path,
                             "type": "summary",
-                            "content": summary
-                        })
+                            "content": summary,
+                            "priority": self.target_priorities.get(path, 0)
+                        }
+                        level_context.append(entry)
+                        if entry["priority"] > 0:
+                            context["target_focused_files"].append(path)
             
             if level_context:
                 context["levels"][depth] = level_context
