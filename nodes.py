@@ -101,11 +101,12 @@ class FetchRepo(Node):
 class IdentifyAbstractions(Node):
     def prep(self, shared):
         files_data = shared["files"]
+        project_name = shared["project_name"]  # Get project name
+        language = shared.get("language", "english")  # Get language
+        use_cache = shared.get("use_cache", True)  # Get use_cache flag, default to True
+        max_abstraction_num = shared.get("max_abstraction_num", 10)  # Get max_abstraction_num, default to 10
+        target_list = shared.get("target_list", set())  # Get target list
         hierarchical_context = shared["hierarchical_context"]
-        project_name = shared["project_name"]
-        language = shared.get("language", "english")
-        use_cache = shared.get("use_cache", True)
-        max_abstraction_num = shared.get("max_abstraction_num", 10)
         token_manager = shared["token_manager"]
 
         # Create context from hierarchical structure
@@ -134,6 +135,13 @@ class IdentifyAbstractions(Node):
             [f"- {idx} # {path}" for idx, path in file_info]
         )
 
+        # If we have target items, add them to the prompt
+        target_emphasis = ""
+        if target_list:
+            target_emphasis = f"\nIMPORTANT: Give special emphasis to code related to the following targets:\n" + \
+                            "\n".join([f"- {target}" for target in sorted(target_list)]) + \
+                            "\nMark abstractions highly relevant to these targets with 'is_key: true' in the output.\n"
+
         return (
             context,
             file_listing_for_prompt,
@@ -141,7 +149,8 @@ class IdentifyAbstractions(Node):
             project_name,
             language,
             use_cache,
-            max_abstraction_num
+            max_abstraction_num,
+            target_emphasis
         )
 
     def exec(self, prep_res):
@@ -153,6 +162,7 @@ class IdentifyAbstractions(Node):
             language,
             use_cache,
             max_abstraction_num,
+            target_emphasis
         ) = prep_res  # Unpack all parameters
         print(f"Identifying abstractions using LLM...")
 
@@ -174,11 +184,12 @@ Codebase Context:
 
 {language_instruction}Analyze the codebase context.
 Identify the top 5-{max_abstraction_num} core most important abstractions to help those new to the codebase.
-
+{target_emphasis}
 For each abstraction, provide:
 1. A concise `name`{name_lang_hint}.
 2. A beginner-friendly `description` explaining what it is with a simple analogy, in around 100 words{desc_lang_hint}.
 3. A list of relevant `file_indices` (integers) using the format `idx # path/comment`.
+4. If this abstraction is particularly relevant to any of the target items, mark it with `is_key: true`.
 
 List of file indices and paths present in the context:
 {file_listing_for_prompt}
@@ -194,6 +205,7 @@ Format the output as a YAML list of dictionaries:
   file_indices:
     - 0 # path/to/file1.py
     - 3 # path/to/related.py
+  is_key: true  # Only if highly relevant to target items
 - name: |
     Query Optimization{name_lang_hint}
   description: |
@@ -202,7 +214,8 @@ Format the output as a YAML list of dictionaries:
     - 5 # path/to/another.js
 # ... up to {max_abstraction_num} abstractions
 ```"""
-        response = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0))  # Use cache only if enabled and not retrying
+
+        response = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0)) # Use cache only if enabled and not retrying
 
         # --- Validation ---
         yaml_str = response.strip().split("```yaml")[1].split("```")[0].strip()
@@ -212,7 +225,8 @@ Format the output as a YAML list of dictionaries:
             raise ValueError("LLM Output is not a list")
 
         validated_abstractions = []
-        for item in abstractions:
+        key_abstractions = []  # Track indices of key abstractions
+        for idx, item in enumerate(abstractions):
             if not isinstance(item, dict) or not all(
                 k in item for k in ["name", "description", "file_indices"]
             ):
@@ -246,24 +260,27 @@ Format the output as a YAML list of dictionaries:
                     )
 
             item["files"] = sorted(list(set(validated_indices)))
+            # Check if this is a key abstraction
+            if item.get("is_key", False):
+                key_abstractions.append(idx)
+                
             # Store only the required fields
             validated_abstractions.append(
                 {
                     "name": item["name"],  # Potentially translated name
-                    "description": item[
-                        "description"
-                    ],  # Potentially translated description
+                    "description": item["description"],  # Potentially translated description
                     "files": item["files"],
+                    "is_key": item.get("is_key", False),  # Track if this is a key abstraction
                 }
             )
 
-        print(f"Identified {len(validated_abstractions)} abstractions.")
-        return validated_abstractions
+        print(f"Identified {len(validated_abstractions)} abstractions ({len(key_abstractions)} key abstractions).")
+        return validated_abstractions, key_abstractions
 
     def post(self, shared, prep_res, exec_res):
-        shared["abstractions"] = (
-            exec_res  # List of {"name": str, "description": str, "files": [int]}
-        )
+        abstractions, key_abstractions = exec_res
+        shared["abstractions"] = abstractions # List of {"name": str, "description": str, "files": [int]}
+        shared["key_abstractions"] = key_abstractions
 
 
 class AnalyzeRelationships(Node):
