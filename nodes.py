@@ -1,11 +1,11 @@
 import os
-import re
 import yaml
 from pocketflow import Node, BatchNode
 from utils.crawl_github_files import crawl_github_files
 from utils.call_llm import call_llm
 from utils.crawl_local_files import crawl_local_files
 from utils.token_manager import TokenManager
+from utils.technical_notes import TechnicalNotesManager, TechnicalNote
 
 
 # Helper to get content for specific file indices
@@ -608,6 +608,10 @@ Now, provide the YAML output:
 
 
 class WriteChapters(BatchNode):
+    def __init__(self, max_retries=5, wait=20):
+        super().__init__(max_retries=max_retries, wait=wait)
+        self.technical_notes_manager = TechnicalNotesManager()
+
     def prep(self, shared):
         chapter_order = shared["chapter_order"]  # List of indices
         abstractions = shared[
@@ -715,7 +719,6 @@ class WriteChapters(BatchNode):
         return items_to_process  # Iterable for BatchNode
 
     def exec(self, item):
-        # This runs for each item prepared above
         abstraction_name = item["abstraction_details"][
             "name"
         ]  # Potentially translated name
@@ -858,7 +861,52 @@ Now, directly provide a super beginner-friendly Markdown output (DON'T need ```m
         # Add the generated content to our temporary list for the next iteration's context
         self.chapters_written_so_far.append(chapter_content)
 
-        return chapter_content  # Return the Markdown string (potentially translated)
+        # Generate technical notes
+        tech_notes_prompt = f"""
+Analyze the implementation details of {abstraction_name} and generate detailed technical notes.
+Focus on aspects that are not covered in the main tutorial but are important for a deep technical understanding.
+
+Relevant Code:
+{file_context_str if file_context_str else "No specific code snippets provided"}
+
+For each technical aspect, provide:
+1. A detailed explanation of the implementation
+2. Specific code references and examples
+3. Performance implications, if any
+4. Best practices and gotchas
+5. Advanced usage patterns
+
+Structure the response as YAML with this format:
+notes:
+  - category: implementation|api|performance|security|etc
+    content: detailed technical explanation
+    references: 
+      - relevant code snippets or file references
+    tags:
+      - relevant technical keywords
+
+Output only valid YAML, no other text."""
+
+        tech_notes_response = call_llm(tech_notes_prompt, use_cache=use_cache)
+        try:
+            notes_data = yaml.safe_load(tech_notes_response)
+            for note_data in notes_data.get("notes", []):
+                technical_note = TechnicalNote(
+                    content=note_data["content"],
+                    references=note_data.get("references", []),
+                    category=note_data["category"],
+                    tags=note_data.get("tags", [])
+                )
+                self.technical_notes_manager.add_note(abstraction_name, technical_note)
+        except Exception as e:
+            print(f"Warning: Failed to parse technical notes for {abstraction_name}: {e}")
+
+        # Format and append technical notes to chapter content 
+        technical_notes_md = self.technical_notes_manager.format_notes_as_markdown(abstraction_name)
+        if technical_notes_md:
+            chapter_content += f"\n\n<details>\n<summary>📚 Technical Deep Dive</summary>\n\n{technical_notes_md}\n</details>\n"
+
+        return chapter_content
 
     def post(self, shared, prep_res, exec_res_list):
         # exec_res_list contains the generated Markdown for each chapter, in order

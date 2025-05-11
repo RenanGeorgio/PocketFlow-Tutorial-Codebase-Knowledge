@@ -1,7 +1,7 @@
 from typing import Dict, Set, List, Tuple, Any
 import os
 import tiktoken
-from .code_analyzer import CodeAnalyzer, RelationshipScore
+from .code_analyzer import CodeAnalyzer
 
 class TokenManager:
     def __init__(self, model_name: str = "gpt-4", max_tokens: int = 128000):
