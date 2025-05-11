@@ -1,24 +1,28 @@
-import tiktoken
-from typing import Dict, List, Tuple, Any
+from typing import Dict, Set, List, Tuple, Any
 import os
+import tiktoken
+from .code_analyzer import CodeAnalyzer, RelationshipScore
 
 class TokenManager:
     def __init__(self, model_name: str = "gpt-4", max_tokens: int = 128000):
-        """Initialize the token manager.
+        """Initialize token manager.
         
         Args:
-            model_name: The name of the model to use for token counting
+            model_name: Name of model to use for token counting
             max_tokens: Maximum tokens allowed in context
         """
-        self.encoder = tiktoken.encoding_for_model(model_name)
+        self.model_name = model_name
         self.max_tokens = max_tokens
+        self.encoding = tiktoken.encoding_for_model(model_name)
         self.current_tokens = 0
-        self.content_tokens: Dict[str, int] = {}
-        self.target_priorities: Dict[str, int] = {}  # Store priority scores for files
+        self.content_tokens: Dict[str, int] = {}  # Map content keys to token counts
+        self.target_priorities: Dict[str, float] = {}  # Map paths to priority scores
+        self.code_analyzer = CodeAnalyzer()  # Initialize code analyzer
+        self.file_patterns = set()  # Store supported file patterns
 
     def count_tokens(self, text: str) -> int:
         """Count the number of tokens in a text."""
-        return len(self.encoder.encode(text))
+        return len(self.encoding.encode(text))
 
     def add_content(self, key: str, content: str) -> bool:
         """Add content to the token manager.
@@ -44,31 +48,55 @@ class TokenManager:
         """Get the number of tokens still available."""
         return self.max_tokens - self.current_tokens
 
+    def set_file_patterns(self, patterns: Set[str]) -> None:
+        """Set the supported file patterns for relationship analysis.
+        
+        Args:
+            patterns: Set of glob patterns (e.g., {"*.py", "*.js"})
+        """
+        self.file_patterns = patterns
+
     def set_target_priorities(self, target_list: set) -> None:
-        """Set priority scores for files based on target list.
+        """Set priority scores for files based on target list and code relationships.
+        
+        Uses CodeAnalyzer to perform smarter priority scoring based on:
+        - Direct target matches (1.0)
+        - Import relationships (0.5-0.9)
+        - Inheritance relationships (0.5-0.9)
+        - Function call relationships (0.5-0.9)
+        - Semantic relationships (0.1-0.4)
         
         Args:
             target_list: Set of target patterns to prioritize
         """
         self.target_priorities.clear()
-        for path in self.content_tokens.keys():
-            priority = sum(1 for target in target_list if target.lower() in path.lower())
-            self.target_priorities[path] = priority
+        
+        # Convert dictionary items to list of tuples for analyzer
+        files_data = [(path, content) for path, content in self.content_tokens.items()]
+        
+        priorities = None
+        if target_list:
+            # Get relationship-based priorities with file patterns
+            priorities = self.code_analyzer.analyze_file_relationships(
+                files_data,
+                self.file_patterns,
+                target_list
+            )
+        
+        # Update our priorities dictionary
+        self.target_priorities.update(priorities)
 
     def create_hierarchical_context(self, files_data: List[Tuple[str, str]], 
-                                  max_files_per_level: int = 50,
-                                  target_list: set = None) -> Dict[str, Any]:
+                                  max_files_per_level: int = 50) -> Dict[str, Any]:
         """Create a hierarchical context from files data.
         
         Args:
             files_data: List of (path, content) tuples
             max_files_per_level: Maximum number of files to include at each level
-            target_list: Optional set of target patterns to prioritize
+        
+        Returns:
+            Dict containing hierarchical context information
         """
-        # Update priorities if target list is provided
-        if target_list:
-            self.set_target_priorities(target_list)
-
         # Group files by directory level
         hierarchy: Dict[str, List[Tuple[str, str]]] = {}
         
@@ -82,18 +110,96 @@ class TokenManager:
         context = {
             "levels": {},
             "file_summaries": {},
-            "total_files": len(files_data),
-            "target_focused_files": []  # Track files relevant to targets
+            "total_files": len(files_data)
         }
 
         for depth in sorted(hierarchy.keys()):
             level_files = hierarchy[depth]
             
-            # Sort files by priority, size and importance
+            # Sort files by size and importance (e.g., prioritize non-test files)
             level_files.sort(key=lambda x: (
-                -self.target_priorities.get(x[0], 0),  # Higher priority first
                 "test" in x[0].lower(),  # Deprioritize test files
                 -len(x[1])  # Prioritize larger files
+            ))
+
+            # Take top N files for this level
+            selected_files = level_files[:max_files_per_level]
+            
+            level_context = []
+            for path, content in selected_files:
+                # Try to add full content
+                if self.add_content(f"full_{path}", content):
+                    level_context.append({
+                        "path": path,
+                        "type": "full",
+                        "content": content
+                    })
+                else:
+                    # If full content doesn't fit, add a summary
+                    summary = self._create_file_summary(path, content)
+                    if self.add_content(f"summary_{path}", summary):
+                        level_context.append({
+                            "path": path,
+                            "type": "summary",
+                            "content": summary
+                        })
+            
+            if level_context:
+                context["levels"][depth] = level_context
+
+        return context
+
+    def create_hierarchical_context_with_targets(self, files_data: List[Tuple[str, str]], 
+                                  max_files_per_level: int = 50,
+                                  target_list: set = None) -> Dict[str, Any]:
+        """Create a hierarchical context from files data.
+        
+        Args:
+            files_data: List of (path, content) tuples
+            max_files_per_level: Maximum number of files to include at each level
+            target_list: Optional set of target patterns to prioritize
+            
+        Returns:
+            Dict containing:
+            - levels: Dict mapping depth to list of file data
+            - file_summaries: Dict mapping paths to summaries
+            - total_files: Total number of files
+            - target_focused_files: List of files related to targets
+        """
+        # Pre-analyze all files so we have priorities ready
+        if target_list:
+            # Add all files to the token manager first
+            for path, content in files_data:
+                self.add_content(path, content)
+            # Then analyze relationships and set priorities
+            self.set_target_priorities(target_list)
+            
+        # Group files by directory level
+        hierarchy: Dict[str, List[Tuple[str, str]]] = {}
+        
+        for path, content in files_data:
+            depth = len(os.path.normpath(path).split(os.sep))
+            if depth not in hierarchy:
+                hierarchy[depth] = []
+            hierarchy[depth].append((path, content))
+
+        context = {
+            "levels": {},
+            "file_summaries": {},
+            "total_files": len(files_data),
+            "target_focused_files": []  # Track files relevant to targets
+        }
+
+        # Process each level with enhanced prioritization
+        for depth in sorted(hierarchy.keys()):
+            level_files = hierarchy[depth]
+            
+            # Sort files by priority with direct matches taking precedence
+            level_files.sort(key=lambda x: (
+                -len([t for t in (target_list or set()) if t.lower() in x[0].lower()]),  # Direct matches first
+                -self.target_priorities.get(x[0], 0),  # Then relationship-based priority
+                "test" in x[0].lower(),  # Then deprioritize test files
+                -len(x[1])  # Finally, prioritize larger files
             ))
 
             # Take top N files for this level
