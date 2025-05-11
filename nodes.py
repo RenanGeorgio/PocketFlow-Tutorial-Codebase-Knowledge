@@ -57,7 +57,7 @@ class FetchRepo(Node):
             "exclude_patterns": exclude_patterns,
             "max_file_size": max_file_size,
             "use_relative_paths": True,
-            "target_list": target_list  # Pass target list
+            "target_list": target_list
         }
 
     def exec(self, prep_res):
@@ -82,25 +82,25 @@ class FetchRepo(Node):
                 use_relative_paths=prep_res["use_relative_paths"]
             )
 
-        target_list = prep_res["target_list"]
         # Convert dict to list of tuples: [(path, content), ...]
         files_list = list(result.get("files", {}).items())
         if len(files_list) == 0:
-            raise (ValueError("Failed to fetch files"))
+            raise ValueError("Failed to fetch files")
 
-        context = None
-        if target_list:
-            # Create hierarchical context using token manager with target list
-            context = self.token_manager.create_hierarchical_context_with_targets(files_list, target_list=target_list)
-        else:
-            context = self.token_manager.create_hierarchical_context(files_list)
+        # Create hierarchical context using token manager
+        context = self.token_manager.create_hierarchical_context(
+            files_data=files_list,
+            max_files_per_level=50,
+            target_list=prep_res.get("target_list")
+        )
         
+        # Print statistics
         print(f"Fetched {len(files_list)} files.")
         print(f"Created hierarchical context with {len(context['levels'])} levels")
-        print(f"Found {len(context['target_focused_files'])} files relevant to target list")
+        if 'target_focused_files' in context:
+            print(f"Found {len(context['target_focused_files'])} files relevant to target list")
         print(f"Available tokens: {self.token_manager.get_available_tokens()}")
         
-        # Store both full files list and hierarchical context
         return {
             "files": files_list,
             "hierarchical_context": context

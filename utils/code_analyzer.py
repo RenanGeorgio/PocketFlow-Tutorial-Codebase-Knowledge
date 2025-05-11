@@ -27,6 +27,7 @@ class CodeAnalyzer:
         self._relationship_cache: Dict[str, Set[str]] = {}
         self._inheritance_cache: Dict[str, Set[str]] = {}
         self._score_cache: Dict[str, Dict[str, RelationshipScore]] = {}
+        self._files_data: List[Tuple[str, str]] = []  # Store files data for semantic analysis
 
     @lru_cache(maxsize=1000)
     def analyze_file_relationships(self, files_data: List[Tuple[str, str]],
@@ -36,73 +37,61 @@ class CodeAnalyzer:
         
         Args:
             files_data: List of (path, content) tuples
-            target_list: Set of target patterns to prioritize
-            file_patterns: Set of file patterns to consider for relationships
-            
-        Returns:
-            Dict mapping file paths to priority scores (0.0-1.0):
-            - Direct target matches: 1.0
-            - Direct relationships: 0.5-0.9 
-            - Secondary relationships: 0.1-0.4
-            - No relationship: 0.0
+            file_patterns: Set of file patterns to consider
+            target_list: Optional set of target patterns to prioritize
         """
+        if not target_list:
+            return {}
+            
+        self._files_data = files_data  # Store for semantic analysis
         priorities = {}
         
         # First pass - static analysis
         for path, content in files_data:
-            if any(target.lower() in path.lower() for target in target_list):
-                # Direct target match
-                priorities[path] = 1.0
-                continue
-                
-            score = RelationshipScore()
+            score = self._analyze_file_relationships(path, content, target_list)
             
-            try:
-                # Language-specific analysis
-                if path.endswith('.py'):
-                    # Python - Use AST
-                    tree = ast.parse(content)
-                    imports = self._extract_imports(tree)
-                    score.direct_import = self._calculate_import_score(imports, target_list)
-                    score.inheritance = self._analyze_inheritance(tree, files_data, target_list)
-                    score.function_calls = self._analyze_function_calls(tree, files_data, target_list)
-                elif path.endswith(('.js', '.jsx', '.ts', '.tsx')):
-                    # JavaScript/TypeScript
-                    imports = self._extract_js_imports(content)
-                    score.direct_import = self._calculate_import_score(imports, target_list)
-                elif path.endswith('.go'):
-                    # Go
-                    imports = self._extract_go_imports(content)
-                    score.direct_import = self._calculate_import_score(imports, target_list)
-                elif path.endswith('.java'):
-                    # Java
-                    imports = self._extract_java_imports(content)
-                    score.direct_import = self._calculate_import_score(imports, target_list)
-                    
-                if not target_list:
-                    score.semantic = 0.0
-                else:
-                    # Add semantic analysis for all file types
-                    score.semantic = self._analyze_semantic_relationship(content, files_data, target_list)
-                
-                # Cache the score
-                if path not in self._score_cache:
-                    self._score_cache[path] = {}
-                    
-                for target in target_list:
-                    self._score_cache[path][target] = score
-                    
-            except Exception as e:
-                print(f"Warning: Error analyzing {path}: {e}")
-                continue
-
-        # Calculate final priorities            
-        for path, scores in self._score_cache.items():
-            if path not in priorities:  # Skip direct matches
-                priorities[path] = max(score.total() for score in scores.values())
+            if score.total() > 0:
+                priorities[path] = score.total()
                 
         return priorities
     
+    def _analyze_file_relationships(self, path: str, content: str, target_list: Set[str]) -> RelationshipScore:
+        """Analyze all types of relationships for a file."""
+        score = RelationshipScore()
+        
+        try:
+            # Language-specific analysis
+            if path.endswith('.py'):
+                tree = ast.parse(content)
+                imports = self._extract_imports(tree)
+                score.direct_import = self._calculate_import_score(imports, target_list)
+                score.inheritance = self._analyze_inheritance_py(tree, target_list)
+                score.function_calls = self._analyze_function_calls_py(tree, target_list)
+            elif path.endswith(('.js', '.jsx', '.ts', '.tsx')):
+                imports = self._extract_js_imports(content)
+                score.direct_import = self._calculate_import_score(imports, target_list)
+                score.inheritance = self._analyze_inheritance_js(content, target_list)
+                score.function_calls = self._analyze_function_calls_js(content, target_list)
+            elif path.endswith('.go'):
+                imports = self._extract_go_imports(content)
+                score.direct_import = self._calculate_import_score(imports, target_list)
+                score.inheritance = self._analyze_inheritance_go(content, target_list)
+                score.function_calls = self._analyze_function_calls_go(content, target_list)
+            elif path.endswith('.java'):
+                imports = self._extract_java_imports(content)
+                score.direct_import = self._calculate_import_score(imports, target_list)
+                score.inheritance = self._analyze_inheritance_java(content, target_list)
+                score.function_calls = self._analyze_function_calls_java(content, target_list)
+                
+            # Only do semantic analysis if other scores are low
+            if score.total() < 0.3:
+                score.semantic = self._analyze_semantic_relationship(content, self._files_data, target_list)
+                
+        except Exception as e:
+            print(f"Warning: Error analyzing {path}: {e}")
+            
+        return score
+
     def _extract_imports(self, tree: ast.AST) -> Set[str]:
         """Extract all imports from a Python AST."""
         imports = set()
@@ -166,55 +155,157 @@ class CodeAnalyzer:
                            for imp in imports)
         return min(0.8, direct_matches * 0.2)  # Cap at 0.8
         
-    def _analyze_inheritance(self, tree: ast.AST, files_data: List[Tuple[str, str]], 
-                           target_list: Set[str]) -> float:
-        """Analyze class inheritance relationships."""
+    def _analyze_inheritance_py(self, tree: ast.AST, target_list: Set[str]) -> float:
+        """Analyze inheritance relationships in Python code."""
         score = 0.0
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
                 for base in node.bases:
                     if isinstance(base, ast.Name):
-                        # Direct base class
-                        if self._is_target_class(base.id, files_data, target_list):
+                        if self._is_target_class(base.id, target_list):
                             score += 0.3
                     elif isinstance(base, ast.Attribute):
-                        # Imported base class
-                        if self._is_target_class(base.attr, files_data, target_list):
+                        if self._is_target_class(base.attr, target_list):
                             score += 0.2
-        return min(0.9, score)  # Cap at 0.9
-    
-    def _analyze_function_calls(self, tree: ast.AST, files_data: List[Tuple[str, str]], 
-                              target_list: Set[str]) -> float:
-        """Analyze function call relationships."""
+        return min(0.9, score)
+
+    def _analyze_inheritance_js(self, content: str, target_list: Set[str]) -> float:
+        """Analyze inheritance relationships in JavaScript/TypeScript code."""
+        score = 0.0
+        for line in content.split('\n'):
+            line = line.strip()
+            # Class inheritance
+            if 'class' in line and 'extends' in line:
+                parts = line.split('extends')
+                if len(parts) > 1:
+                    parent = parts[1].split('{')[0].strip()
+                    if self._is_target_class(parent, target_list):
+                        score += 0.3
+            # React components
+            elif '.extends(React.Component)' in line or 'extends Component' in line:
+                score += 0.2
+        return min(0.9, score)
+
+    def _analyze_inheritance_go(self, content: str, target_list: Set[str]) -> float:
+        """Analyze inheritance-like relationships in Go code."""
+        score = 0.0
+        # Look for struct embedding and interface implementation
+        for line in content.split('\n'):
+            line = line.strip()
+            if 'type' in line and 'struct' in line:
+                # Check for embedded types
+                struct_content = line[line.find('struct'):].strip('{}')
+                for embedded in struct_content.split('\n'):
+                    embedded = embedded.strip()
+                    if embedded and not ':' in embedded:  # Embedded type
+                        if self._is_target_class(embedded, target_list):
+                            score += 0.3
+            elif 'type' in line and 'interface' in line:
+                if any(self._is_target_class(t, target_list) for t in line.split()):
+                    score += 0.2
+        return min(0.9, score)
+
+    def _analyze_inheritance_java(self, content: str, target_list: Set[str]) -> float:
+        """Analyze inheritance relationships in Java code."""
+        score = 0.0
+        for line in content.split('\n'):
+            line = line.strip()
+            # Class inheritance
+            if 'class' in line and 'extends' in line:
+                parts = line.split('extends')
+                if len(parts) > 1:
+                    parent = parts[1].split('{')[0].strip().split(' ')[0]
+                    if self._is_target_class(parent, target_list):
+                        score += 0.3
+            # Interface implementation
+            elif 'implements' in line:
+                parts = line.split('implements')
+                if len(parts) > 1:
+                    interfaces = parts[1].split('{')[0].strip().split(',')
+                    if any(self._is_target_class(i.strip(), target_list) for i in interfaces):
+                        score += 0.2
+        return min(0.9, score)
+
+    def _analyze_function_calls_py(self, tree: ast.AST, target_list: Set[str]) -> float:
+        """Analyze function call relationships in Python code."""
         score = 0.0
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Name):
-                    if self._is_target_function(node.func.id, files_data, target_list):
+                    if self._is_target_function(node.func.id, target_list):
                         score += 0.1
-                elif isinstance(node, ast.Attribute):
-                    if self._is_target_function(node.func.attr, files_data, target_list):
+                elif isinstance(node.func, ast.Attribute):
+                    if self._is_target_function(node.func.attr, target_list):
                         score += 0.1
-        return min(0.7, score)  # Cap at 0.7
+        return min(0.7, score)
 
-    def _analyze_semantic_relationship(self, content: str, files_data: List[Tuple[str, str]], 
-                                     target_list: Set[str]) -> float:
+    def _analyze_function_calls_js(self, content: str, target_list: Set[str]) -> float:
+        """Analyze function call relationships in JavaScript/TypeScript code."""
+        score = 0.0
+        for line in content.split('\n'):
+            line = line.strip()
+            # Look for function calls
+            for target in target_list:
+                target_lower = target.lower()
+                if '.' in line and '(' in line:
+                    func_name = line.split('(')[0].strip().split('.')[-1]
+                    if target_lower in func_name.lower():
+                        score += 0.1
+                elif '(' in line:
+                    func_name = line.split('(')[0].strip()
+                    if target_lower in func_name.lower():
+                        score += 0.1
+        return min(0.7, score)
+
+    def _analyze_function_calls_go(self, content: str, target_list: Set[str]) -> float:
+        """Analyze function call relationships in Go code."""
+        score = 0.0
+        for line in content.split('\n'):
+            line = line.strip()
+            if '.' in line and '(' in line:
+                # Method calls
+                parts = line.split('(')[0].split('.')
+                if len(parts) > 1 and self._is_target_function(parts[-1], target_list):
+                    score += 0.1
+            elif '(' in line:
+                # Function calls
+                func_name = line.split('(')[0].strip()
+                if self._is_target_function(func_name, target_list):
+                    score += 0.1
+        return min(0.7, score)
+
+    def _analyze_function_calls_java(self, content: str, target_list: Set[str]) -> float:
+        """Analyze function call relationships in Java code."""
+        score = 0.0
+        for line in content.split('\n'):
+            line = line.strip()
+            if '.' in line and '(' in line:
+                # Method calls
+                method = line.split('(')[0].strip()
+                if '.' in method:
+                    method_name = method.split('.')[-1]
+                    if self._is_target_function(method_name, target_list):
+                        score += 0.1
+        return min(0.7, score)
+
+    def _analyze_semantic_relationship(self, content: str, files_data: List[Tuple[str, str]], target_list: Set[str]) -> float:
         """Analyze semantic relationships using LLM.
         
-        Uses an LLM to identify semantic relationships between files based on:
-        - Shared domain concepts
-        - Similar functionality
-        - Architectural relationships
-        - Business logic connections
+        Args:
+            content: Content of the file being analyzed
+            files_data: List of (path, content) tuples for all files
+            target_list: Set of target patterns to prioritize
         """
         if not target_list:
             return 0.0
 
-        # Create context of target files
+        # Create context of target files (but limit size for LLM context)
         target_context = ""
-        for path, content in files_data:
+        for path, target_content in files_data:
             if any(target.lower() in path.lower() for target in target_list):
-                target_context += f"\nFile: {path}\n{content}\n"
+                # Add a truncated version of each target file
+                preview = target_content[:1000] + "..." if len(target_content) > 1000 else target_content
+                target_context += f"\nFile: {path}\n{preview}\n"
 
         if not target_context:
             return 0.0
@@ -230,7 +321,7 @@ Target files context:
 {target_context}
 
 Code to analyze:
-{content}
+{content[:1000]}... # Truncate for LLM context window
 
 Rate the semantic relationship strength from 0.0 to 0.4, where:
 0.0 = No semantic relationship
@@ -246,13 +337,11 @@ Output only the number (e.g. "0.2")."""
         except (ValueError, TypeError):
             return 0.0  # Default to no relationship on error
 
-    def _is_target_class(self, class_name: str, files_data: List[Tuple[str, str]], 
-                        target_list: Set[str]) -> bool:
+    def _is_target_class(self, class_name: str, target_list: Set[str]) -> bool:
         """Check if a class name belongs to a target module."""
         return any(target.lower() in class_name.lower() for target in target_list)
     
-    def _is_target_function(self, func_name: str, files_data: List[Tuple[str, str]], 
-                           target_list: Set[str]) -> bool:
+    def _is_target_function(self, func_name: str, target_list: Set[str]) -> bool:
         """Check if a function belongs to a target module."""
         return any(target.lower() in func_name.lower() for target in target_list)
     
