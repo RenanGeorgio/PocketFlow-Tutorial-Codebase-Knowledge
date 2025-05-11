@@ -88,6 +88,58 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
 
     return response_text
 
+def semantic_analizes(prompt: str, use_cache: bool = True) -> str:
+    # Log the prompt
+    logger.info(f"PROMPT: {prompt}")
+
+    # Check cache if enabled
+    if use_cache:
+        # Load cache from disk
+        cache = {}
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r") as f:
+                    cache = json.load(f)
+            except:
+                logger.warning(f"Failed to load cache, starting with empty cache")
+
+        # Return from cache if exists
+        if prompt in cache:
+            logger.info(f"RESPONSE: {cache[prompt]}")
+            return cache[prompt]
+
+    # You can comment the previous line and use the AI Studio key instead:
+    client = genai.Client(
+        api_key=os.getenv("GEMINI_API_KEY", ""),
+    )
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25")
+    
+    response = client.models.generate_content(model=model, contents=[prompt])
+    response_text = response.text
+
+    # Log the response
+    logger.info(f"RESPONSE: {response_text}")
+
+    # Update cache if enabled
+    if use_cache:
+        # Load cache again to avoid overwrites
+        cache = {}
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r") as f:
+                    cache = json.load(f)
+            except:
+                pass
+
+        # Add to cache and save
+        cache[prompt] = response_text
+        try:
+            with open(cache_file, "w") as f:
+                json.dump(cache, f)
+        except Exception as e:
+            logger.error(f"Failed to save cache: {e}")
+
+    return response_text
 
 # # Use Anthropic Claude 3.7 Sonnet Extended Thinking
 # def call_llm(prompt, use_cache: bool = True):
