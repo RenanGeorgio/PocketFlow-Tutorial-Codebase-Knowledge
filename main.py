@@ -40,6 +40,10 @@ def main():
     parser.add_argument("-i", "--include", nargs="+", help="Include file patterns (e.g. '*.py' '*.js'). Defaults to common code files if not specified.")
     parser.add_argument("-e", "--exclude", nargs="+", help="Exclude file patterns (e.g. 'tests/*' 'docs/*'). Defaults to test/build directories if not specified.")
     parser.add_argument("-s", "--max-size", type=int, default=100000, help="Maximum file size in bytes (default: 100000, about 100KB).")
+    # Add mode parameter to control tutorial detail level
+    parser.add_argument("--mode", choices=["beginner", "intermediate", "advanced"], default="beginner",
+                     help="Tutorial detail level (default: beginner). Advanced mode includes implementation details, "
+                          "performance considerations, and deep technical insights.")
     # Add language parameter for multi-language support
     parser.add_argument("--language", default="english", help="Language for the generated tutorial (default: english)")
     # Add use_cache parameter to control LLM caching

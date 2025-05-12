@@ -624,6 +624,7 @@ class WriteChapters(BatchNode):
         key_abstractions = shared.get("key_abstractions", [])  # Get key abstractions
         key_relationships = shared.get("key_relationships", [])  # Get key relationships
         target_list = shared.get("target_list", set())  # Get target list
+        mode = shared.get("mode", "beginner")  # Get tutorial detail level mode
 
         # Get already written chapters to provide context
         # We store them temporarily during the batch run, not in shared memory yet
@@ -707,6 +708,7 @@ class WriteChapters(BatchNode):
                         "is_key": is_key,  # Add flag for key abstractions
                         "related_key_relationships": related_key_relationships,  # Add related key relationships
                         "target_list": target_list,  # Add target list for emphasis
+                        "mode": mode,  # Add tutorial detail level mode
                         # previous_chapters_summary will be added dynamically in exec
                     }
                 )
@@ -719,12 +721,8 @@ class WriteChapters(BatchNode):
         return items_to_process  # Iterable for BatchNode
 
     def exec(self, item):
-        abstraction_name = item["abstraction_details"][
-            "name"
-        ]  # Potentially translated name
-        abstraction_description = item["abstraction_details"][
-            "description"
-        ]  # Potentially translated description
+        abstraction_name = item["abstraction_details"]["name"]  # Potentially translated name
+        abstraction_description = item["abstraction_details"]["description"]  # Potentially translated description
         chapter_num = item["chapter_num"]
         project_name = item.get("project_name")
         language = item.get("language", "english")
@@ -732,6 +730,7 @@ class WriteChapters(BatchNode):
         is_key = item.get("is_key", False)
         related_key_relationships = item.get("related_key_relationships", [])
         target_list = item.get("target_list", set())
+        mode = item.get("mode", "beginner")  # Get tutorial detail level mode
 
         print(f"Writing {'key ' if is_key else ''}chapter {chapter_num} for: {abstraction_name} using LLM...")
 
@@ -756,55 +755,97 @@ class WriteChapters(BatchNode):
         code_comment_note = ""
         link_lang_note = ""
         tone_note = ""
-        if language.lower() != "english":
-            lang_cap = language.capitalize()
-            language_instruction = f"IMPORTANT: Write this ENTIRE tutorial chapter in **{lang_cap}**. Some input context (like concept name, description, chapter list, previous summary) might already be in {lang_cap}, but you MUST translate ALL other generated content including explanations, examples, technical terms, and potentially code comments into {lang_cap}. DO NOT use English anywhere except in code syntax, required proper nouns, or when specified. The entire output MUST be in {lang_cap}.\n\n"
-            concept_details_note = f" (Note: Provided in {lang_cap})"
-            structure_note = f" (Note: Chapter names might be in {lang_cap})"
-            prev_summary_note = f" (Note: This summary might be in {lang_cap})"
-            instruction_lang_note = f" (in {lang_cap})"
-            mermaid_lang_note = f" (Use {lang_cap} for labels/text if appropriate)"
-            code_comment_note = f" (Translate to {lang_cap} if possible, otherwise keep minimal English for clarity)"
-            link_lang_note = (
-                f" (Use the {lang_cap} chapter title from the structure above)"
-            )
-            tone_note = f" (appropriate for {lang_cap} readers)"
+        
+        # Add mode-specific instructions
+        mode_instruction = ""
+        mode_prompt = ""
+        if mode == "advanced":
+            mode_instruction = """IMPORTANT MODE INSTRUCTION:
+This is an ADVANCED tutorial. You must include:
+1. Detailed implementation insights, including side effects and performance implications
+2. Deep dives into component interactions and potential race conditions
+3. Advanced usage patterns and edge cases
+4. Performance optimization tips
+5. Security considerations where relevant
+6. Error handling and recovery strategies
+7. Architectural decisions and their trade-offs
+8. System-level impacts and considerations
 
-        if is_key:
-            target_matches = [t for t in target_list if any(t.lower() in f.lower() for f in item["related_files_content_map"].keys())]
-            target_instruction = f"""IMPORTANT TARGET FOCUS:
-This is a key chapter that is particularly relevant to the following targets: {', '.join(target_list)}
-{'Specifically, this chapter involves these target items: ' + ', '.join(target_matches) if target_matches else ''}
-Please give special emphasis to how this abstraction relates to and impacts these target areas.
-Highlight any implementation details, configuration options, or usage patterns that are particularly relevant."""
+Make sure to thoroughly explain technical aspects while still maintaining clarity."""
+            mode_prompt = f"""
+- Begin with a high-level motivation explaining what problem this abstraction solves{instruction_lang_note}. Start with a central use case as a concrete example. The whole chapter should guide the reader to understand how to solve this use case.
 
-        prompt = f"""
-{language_instruction}
-{target_instruction}
-Write a very beginner-friendly tutorial chapter (in Markdown format) for the project `{project_name}` about the concept: "{abstraction_name}". This is Chapter {chapter_num}.
+- If the abstraction is complex, break it down into key concepts. Explain each concept one-by-one in details{instruction_lang_note}.
 
-Concept Details{concept_details_note}:
-- Name: {abstraction_name}
-- Description:
-{abstraction_description}
-{'- This is a KEY abstraction particularly relevant to the target areas.' if is_key else ''}
+- Explain how to use this abstraction to solve the use case{instruction_lang_note}. Give example inputs and outputs for code snippets (if the output isn't values, describe at a high level what will happen{instruction_lang_note}).
 
-Complete Tutorial Structure{structure_note}:
-{item["full_chapter_listing"]}
+- Each code block should be BELOW 40 lines! If longer code blocks are needed, break them down into smaller pieces and walk through them one-by-one. When it's the best approach, use comments{code_comment_note} to skip non-important implementation details. Each code block should have a detailed and clear explanation right after it{instruction_lang_note}.
 
-Context from previous chapters{prev_summary_note}:
-{previous_chapters_summary if previous_chapters_summary else "This is the first chapter."}
+- Describe the internal implementation to help understand what's under the hood{instruction_lang_note}. First provide a non-code or code-light walkthrough on what happens step-by-step when the abstraction is called{instruction_lang_note}. It's recommended to use a sequenceDiagram with an example - use as many participants as necessary to explain the content clearly. If participant name has space, use: `participant QP as Query Processing`. {mermaid_lang_note}.
 
-Relevant Code Snippets (Code itself remains unchanged):
-{file_context_str if file_context_str else "No specific code snippets provided for this abstraction."}
+- Then dive deeper into code for the internal implementation with references to files. Provide detailed example code blocks, but make them very clear and understandable. Explain{instruction_lang_note}.
 
-{'Key Relationships to Emphasize:' + '\\n'.join([f"- {r['label']}" for r in related_key_relationships]) if related_key_relationships else ''}
+- IMPORTANT: When you need to refer to other core abstractions covered in other chapters, ALWAYS use proper Markdown links like this: [Chapter Title](filename.md). Use the Complete Tutorial Structure above to find the correct filename and the chapter title{link_lang_note}. Translate the surrounding text.
 
-Instructions for the chapter (Generate content in {language.capitalize()} unless specified otherwise):
-- Start with a clear heading (e.g., `# Chapter {chapter_num}: {abstraction_name}`). Use the provided concept name.
+- Use mermaid diagrams to illustrate complex concepts (```mermaid``` format). {mermaid_lang_note}.
 
-- If this is not the first chapter, begin with a brief transition from the previous chapter{instruction_lang_note}, referencing it with a proper Markdown link using its name{link_lang_note}.
+- Heavily use analogies and examples throughout{instruction_lang_note} to make very clear to understand.
 
+- End the chapter with a brief conclusion that summarizes what was learned{instruction_lang_note} and provides a transition to the next chapter{instruction_lang_note}. If there is a next chapter, use a proper Markdown link: [Next Chapter Title](next_chapter_filename){link_lang_note}.
+
+- Ensure the tone is welcoming and easy for a newcomer to understand{tone_note}.
+
+- Output *only* the Markdown content for this chapter.
+
+Now, directly provide a super understandable Markdown output (DON'T need ```markdown``` tags):"""
+        elif mode == "intermediate":
+            mode_instruction = """IMPORTANT MODE INSTRUCTION:
+This is an INTERMEDIATE tutorial. You should:
+1. Include moderate implementation details and common pitfalls
+2. Explain basic component interactions
+3. Cover typical usage patterns and common edge cases
+4. Include basic performance considerations
+5. Provide practical examples beyond the basics
+6. Explain error handling for common scenarios
+
+Balance technical depth with accessibility."""
+            mode_prompt = f"""
+- Begin with a high-level motivation explaining what problem this abstraction solves{instruction_lang_note}. Start with a central use case as a concrete example. The whole chapter should guide the reader to understand how to solve this use case. Make it very friendly.
+
+- If the abstraction is complex, break it down into key concepts. Explain each concept one-by-one in details{instruction_lang_note}.
+
+- Explain how to use this abstraction to solve the use case{instruction_lang_note}. Give example inputs and outputs for code snippets (if the output isn't values, describe at a high level what will happen{instruction_lang_note}).
+
+- Each code block should be BELOW 25 lines! If longer code blocks are needed, break them down into smaller pieces and walk through them one-by-one. Use comments{code_comment_note} to skip non-important implementation details. Each code block should have a beginner friendly explanation right after it{instruction_lang_note}.
+
+- Describe the internal implementation to help understand what's under the hood{instruction_lang_note}. First provide a non-code or code-light walkthrough on what happens step-by-step when the abstraction is called{instruction_lang_note}. It's recommended to use a sequenceDiagram with an example - keep it minimal with at most 15 participants to ensure clarity. If participant name has space, use: `participant QP as Query Processing`. {mermaid_lang_note}.
+
+- Then dive deeper into code for the internal implementation with references to files. Provide example code blocks, but make them very clear and understandable. Explain{instruction_lang_note}.
+
+- IMPORTANT: When you need to refer to other core abstractions covered in other chapters, ALWAYS use proper Markdown links like this: [Chapter Title](filename.md). Use the Complete Tutorial Structure above to find the correct filename and the chapter title{link_lang_note}. Translate the surrounding text.
+
+- Use mermaid diagrams to illustrate complex concepts (```mermaid``` format). {mermaid_lang_note}.
+
+- Heavily use analogies and examples throughout{instruction_lang_note} to make very clear to understand.
+
+- End the chapter with a brief conclusion that summarizes what was learned{instruction_lang_note} and provides a transition to the next chapter{instruction_lang_note}. If there is a next chapter, use a proper Markdown link: [Next Chapter Title](next_chapter_filename){link_lang_note}.
+
+- Ensure the tone is welcoming and easy for a newcomer to understand{tone_note}.
+
+- Output *only* the Markdown content for this chapter.
+
+Now, directly provide a super understandable Markdown output (DON'T need ```markdown``` tags):"""
+        else:  # beginner mode
+            mode_instruction = """IMPORTANT MODE INSTRUCTION:
+This is a BEGINNER tutorial. Focus on:
+1. Clear, simple explanations of core concepts
+2. Basic usage patterns and examples
+3. Step-by-step guidance
+4. Common use cases
+5. Minimal technical jargon (explain when used)
+
+Keep the content approachable and focused on fundamentals."""
+            mode_prompt = f"""
 - Begin with a high-level motivation explaining what problem this abstraction solves{instruction_lang_note}. Start with a central use case as a concrete example. The whole chapter should guide the reader to understand how to solve this use case. Make it very minimal and friendly to beginners.
 
 - If the abstraction is complex, break it down into key concepts. Explain each concept one-by-one in a very beginner-friendly way{instruction_lang_note}.
@@ -829,7 +870,59 @@ Instructions for the chapter (Generate content in {language.capitalize()} unless
 
 - Output *only* the Markdown content for this chapter.
 
-Now, directly provide a super beginner-friendly Markdown output (DON'T need ```markdown``` tags):
+Now, directly provide a super beginner-friendly Markdown output (DON'T need ```markdown``` tags):"""
+
+        if language.lower() != "english":
+            lang_cap = language.capitalize()
+            language_instruction = f"IMPORTANT: Write this ENTIRE tutorial chapter in **{lang_cap}**. Some input context (like concept name, description, chapter list, previous summary) might already be in {lang_cap}, but you MUST translate ALL other generated content including explanations, examples, technical terms, and potentially code comments into {lang_cap}. DO NOT use English anywhere except in code syntax, required proper nouns, or when specified. The entire output MUST be in {lang_cap}.\n\n"
+            concept_details_note = f" (Note: Provided in {lang_cap})"
+            structure_note = f" (Note: Chapter names might be in {lang_cap})"
+            prev_summary_note = f" (Note: This summary might be in {lang_cap})"
+            instruction_lang_note = f" (in {lang_cap})"
+            mermaid_lang_note = f" (Use {lang_cap} for labels/text if appropriate)"
+            code_comment_note = f" (Translate to {lang_cap} if possible, otherwise keep minimal English for clarity)"
+            link_lang_note = f" (Use the {lang_cap} chapter title from the structure above)"
+            tone_note = f" (appropriate for {lang_cap} readers)"
+
+        if is_key:
+            target_matches = [t for t in target_list if any(t.lower() in f.lower() for f in item["related_files_content_map"].keys())]
+            target_instruction = f"""IMPORTANT TARGET FOCUS:
+This is a key chapter that is particularly relevant to the following targets: {', '.join(target_list)}
+{'Specifically, this chapter involves these target items: ' + ', '.join(target_matches) if target_matches else ''}
+Please give special emphasis to how this abstraction relates to and impacts these target areas.
+Highlight any implementation details, configuration options, or usage patterns that are particularly relevant."""
+
+        prompt = f"""
+{language_instruction}
+{mode_instruction}
+{target_instruction}
+
+Write a very understandable tutorial chapter (in Markdown format) for the project `{project_name}` about the concept: "{abstraction_name}". This is Chapter {chapter_num}.
+
+Concept Details{concept_details_note}:
+- Name: {abstraction_name}
+- Description:
+{abstraction_description}
+{'- This is a KEY abstraction particularly relevant to the target areas.' if is_key else ''}
+
+Complete Tutorial Structure{structure_note}:
+{item["full_chapter_listing"]}
+
+Context from previous chapters{prev_summary_note}:
+{previous_chapters_summary if previous_chapters_summary else "This is the first chapter."}
+
+Relevant Code Snippets (Code itself remains unchanged):
+{file_context_str if file_context_str else "No specific code snippets provided for this abstraction."}
+
+{'Key Relationships to Emphasize:' + '\\n'.join([f"- {r['label']}" for r in related_key_relationships]) if related_key_relationships else ''}
+
+Instructions for the chapter (Generate content in {language.capitalize()} unless specified otherwise):
+
+- Start with a clear heading (e.g., `# Chapter {chapter_num}: {abstraction_name}`). Use the provided concept name.
+
+- If this is not the first chapter, begin with a brief transition from the previous chapter{instruction_lang_note}, referencing it with a proper Markdown link using its name{link_lang_note}.
+
+{mode_prompt}
 """
         chapter_content = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0)) # Use cache only if enabled and not retrying
 
@@ -861,20 +954,24 @@ Now, directly provide a super beginner-friendly Markdown output (DON'T need ```m
         # Add the generated content to our temporary list for the next iteration's context
         self.chapters_written_so_far.append(chapter_content)
 
-        # Generate technical notes
-        tech_notes_prompt = f"""
+        # Generate technical notes based on mode
+        if mode in ["intermediate", "advanced"]:
+            tech_notes_prompt = f"""
 Analyze the implementation details of {abstraction_name} and generate detailed technical notes.
-Focus on aspects that are not covered in the main tutorial but are important for a deep technical understanding.
+Focus on aspects that are not covered in the main tutorial but are important for a {'deep' if mode == 'advanced' else 'moderate'} technical understanding.
+
+{'IMPORTANT: As this is ADVANCED mode, include detailed analysis of performance implications, edge cases, race conditions, and architectural considerations.' if mode == 'advanced' else ''}
 
 Relevant Code:
 {file_context_str if file_context_str else "No specific code snippets provided"}
 
 For each technical aspect, provide:
-1. A detailed explanation of the implementation
+1. {'Deep dive into implementation details, including side effects and edge cases' if mode == 'advanced' else 'Implementation explanation with common pitfalls'}
 2. Specific code references and examples
-3. Performance implications, if any
-4. Best practices and gotchas
-5. Advanced usage patterns
+3. Best practices and gotchas
+4. {'Detailed performance implications and optimization opportunities' if mode == 'advanced' else 'Basic performance considerations'}
+5. {'Advanced usage patterns and architectural implications' if mode == 'advanced' else 'Common usage patterns and considerations'}
+6. {'Security considerations and potential vulnerabilities' if mode == 'advanced' else 'Basic error handling and security tips'}
 
 Structure the response as YAML with this format:
 notes:
@@ -887,24 +984,25 @@ notes:
 
 Output only valid YAML, no other text."""
 
-        tech_notes_response = call_llm(tech_notes_prompt, use_cache=use_cache)
-        try:
-            notes_data = yaml.safe_load(tech_notes_response)
-            for note_data in notes_data.get("notes", []):
-                technical_note = TechnicalNote(
-                    content=note_data["content"],
-                    references=note_data.get("references", []),
-                    category=note_data["category"],
-                    tags=note_data.get("tags", [])
-                )
-                self.technical_notes_manager.add_note(abstraction_name, technical_note)
-        except Exception as e:
-            print(f"Warning: Failed to parse technical notes for {abstraction_name}: {e}")
+            tech_notes_response = call_llm(tech_notes_prompt, use_cache=use_cache)
+            try:
+                notes_data = yaml.safe_load(tech_notes_response)
+                for note_data in notes_data.get("notes", []):
+                    technical_note = TechnicalNote(
+                        content=note_data["content"],
+                        references=note_data.get("references", []),
+                        category=note_data["category"],
+                        tags=note_data.get("tags", [])
+                    )
+                    self.technical_notes_manager.add_note(abstraction_name, technical_note)
+            except Exception as e:
+                print(f"Warning: Failed to parse technical notes for {abstraction_name}: {e}")
 
-        # Format and append technical notes to chapter content 
-        technical_notes_md = self.technical_notes_manager.format_notes_as_markdown(abstraction_name)
-        if technical_notes_md:
-            chapter_content += f"\n\n<details>\n<summary>📚 Technical Deep Dive</summary>\n\n{technical_notes_md}\n</details>\n"
+            # Format and append technical notes to chapter content 
+            technical_notes_md = self.technical_notes_manager.format_notes_as_markdown(abstraction_name)
+            if technical_notes_md:
+                section_title = "📚 Advanced Technical Deep Dive" if mode == "advanced" else "📚 Technical Details"
+                chapter_content += f"\n\n<details>\n<summary>{section_title}</summary>\n\n{technical_notes_md}\n</details>\n"
 
         return chapter_content
 
