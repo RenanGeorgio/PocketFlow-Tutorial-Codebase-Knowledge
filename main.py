@@ -52,6 +52,10 @@ def main():
     parser.add_argument("--max-abstractions", type=int, default=10, help="Maximum number of abstractions to identify (default: 10)")
     # Add target-list parameter for emphasis on specific areas
     parser.add_argument("--target-list", nargs="+", help="List of target files, folders, paths, extensions, or libraries to emphasize in the analysis (e.g., 'sd/*' 'discovery.go' '@prometheus/client')")
+    # Add questions parameter for knowledge base queries
+    parser.add_argument("--questions", nargs="+", 
+                       help="List of questions to ask about the codebase knowledge. Each question will be analyzed "
+                            "and answered in detail, with answers integrated into relevant chapters.")
 
     args = parser.parse_args()
 

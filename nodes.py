@@ -1,11 +1,13 @@
 import os
 import yaml
+import re
 from pocketflow import Node, BatchNode
 from utils.crawl_github_files import crawl_github_files
 from utils.call_llm import call_llm
 from utils.crawl_local_files import crawl_local_files
 from utils.token_manager import TokenManager
 from utils.technical_notes import TechnicalNotesManager, TechnicalNote
+from utils.knowledge_base_manager import KnowledgeBaseManager
 
 
 # Helper to get content for specific file indices
@@ -611,6 +613,7 @@ class WriteChapters(BatchNode):
     def __init__(self, max_retries=5, wait=20):
         super().__init__(max_retries=max_retries, wait=wait)
         self.technical_notes_manager = TechnicalNotesManager()
+        self.chapters_written_so_far = []
 
     def prep(self, shared):
         chapter_order = shared["chapter_order"]  # List of indices
@@ -625,6 +628,9 @@ class WriteChapters(BatchNode):
         key_relationships = shared.get("key_relationships", [])  # Get key relationships
         target_list = shared.get("target_list", set())  # Get target list
         mode = shared.get("mode", "beginner")  # Get tutorial detail level mode
+
+        # Get knowledge base if questions were processed
+        knowledge_base = shared.get("knowledge_base")
 
         # Get already written chapters to provide context
         # We store them temporarily during the batch run, not in shared memory yet
@@ -692,6 +698,11 @@ class WriteChapters(BatchNode):
                     if rel_idx in key_relationships and (rel["from"] == abstraction_index or rel["to"] == abstraction_index):
                         related_key_relationships.append(rel)
 
+                # Get answer snippets for this abstraction
+                answer_snippets = []
+                if knowledge_base:
+                    answer_snippets = knowledge_base.get_snippets_for_abstraction(abstraction_details["name"])
+
                 items_to_process.append(
                     {
                         "chapter_num": i + 1,
@@ -709,6 +720,7 @@ class WriteChapters(BatchNode):
                         "related_key_relationships": related_key_relationships,  # Add related key relationships
                         "target_list": target_list,  # Add target list for emphasis
                         "mode": mode,  # Add tutorial detail level mode
+                        "answer_snippets": answer_snippets,  # Add answer snippets
                         # previous_chapters_summary will be added dynamically in exec
                     }
                 )
@@ -731,6 +743,7 @@ class WriteChapters(BatchNode):
         related_key_relationships = item.get("related_key_relationships", [])
         target_list = item.get("target_list", set())
         mode = item.get("mode", "beginner")  # Get tutorial detail level mode
+        answer_snippets = item.get("answer_snippets", [])
 
         print(f"Writing {'key ' if is_key else ''}chapter {chapter_num} for: {abstraction_name} using LLM...")
 
@@ -924,19 +937,51 @@ Instructions for the chapter (Generate content in {language.capitalize()} unless
 
 {mode_prompt}
 """
-        chapter_content = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0)) # Use cache only if enabled and not retrying
+        chapter_content = call_llm(prompt, use_cache=(use_cache and self.cur_retry == 0)) # Use cache only if enabled and not retrying        # Add emphasis notice for key abstractions and answer snippets
+        if is_key or answer_snippets:
+            notices = []
+            if is_key:
+                notices.append("> ⭐ **Target Focus**: This chapter covers a key abstraction that is particularly relevant to understanding the target areas of interest.")
+            
+            # Add answer snippets with visual markers
+            if answer_snippets:
+                notices.append("> 💠 **Knowledge Base Q&A**: This chapter contains answers to questions about the codebase.")
+                for question, snippet, markers in answer_snippets:
+                    # Create collapsible section for each answer
+                    qa_section = [
+                        "",
+                        "<details>",
+                        f'<summary>📖 Q: {question}</summary>',
+                        "",
+                        snippet  # The snippet already has proper formatting from KnowledgeBaseManager
+                    ]
+                    
+                    # Add visual markers/highlights
+                    if markers:
+                        qa_section.extend([
+                            "",
+                            "**Key Points:**",
+                            *[f"- {marker}" for marker in markers],
+                        ])
+                    
+                    # Add link to full answer
+                    qa_section.extend([
+                        "",
+                        f"[🔍 View Full Detailed Answer](answers/answer_{re.sub(r'[^\w\s-]', '', question.lower())[:50]}.md)",
+                        "</details>",
+                        ""
+                    ])
+                    notices.extend(qa_section)
 
-        # Add emphasis notice for key abstractions
-        if is_key:
-            emphasis_note = "\n\n> ⭐ **Target Focus**: This chapter covers a key abstraction that is particularly relevant to understanding the target areas of interest.\n"
+            # Combine all notices and insert after heading
+            notice_block = "\n" + "\n".join(notices) + "\n"
             if chapter_content.startswith("# "):
-                # Insert after the first heading
                 lines = chapter_content.split("\n")
                 heading = lines[0]
                 rest = "\n".join(lines[1:])
-                chapter_content = f"{heading}{emphasis_note}{rest}"
+                chapter_content = f"{heading}{notice_block}{rest}"
             else:
-                chapter_content = emphasis_note + chapter_content
+                chapter_content = notice_block + chapter_content
 
         # Basic validation/cleanup
         actual_heading = f"# Chapter {chapter_num}: {abstraction_name}"  # Use potentially translated name
@@ -1109,16 +1154,24 @@ class CombineTutorial(Node):
         # Add attribution to index content (using English fixed string)
         index_content += f"\n\n---\n\nGenerated by [AI Codebase Knowledge Builder](https://github.com/The-Pocket/Tutorial-Codebase-Knowledge)"
 
+        # Get answer pages if questions were processed
+        knowledge_base = shared.get("knowledge_base")
+        answer_pages = {}
+        if knowledge_base:
+            answer_pages = knowledge_base.get_answer_pages()
+            
         return {
             "output_path": output_path,
             "index_content": index_content,
-            "chapter_files": chapter_files,  # List of {"filename": str, "content": str}
+            "chapter_files": chapter_files,
+            "answer_pages": answer_pages
         }
 
     def exec(self, prep_res):
         output_path = prep_res["output_path"]
         index_content = prep_res["index_content"]
         chapter_files = prep_res["chapter_files"]
+        answer_pages = prep_res["answer_pages"]
 
         print(f"Combining tutorial into directory: {output_path}")
         # Rely on Node's built-in retry/fallback
@@ -1137,8 +1190,60 @@ class CombineTutorial(Node):
                 f.write(chapter_info["content"])
             print(f"  - Wrote {chapter_filepath}")
 
+        # Write answer pages to answers/ subdirectory
+        if answer_pages:
+            answers_dir = os.path.join(output_path, "answers")
+            os.makedirs(answers_dir, exist_ok=True)
+            for page_id, content in answer_pages.items():
+                with open(os.path.join(answers_dir, f"{page_id}.md"), "w", encoding="utf-8") as f:
+                    f.write(content)
+            print(f"  - Wrote answer pages to {answers_dir}")
+
         return output_path  # Return the final path
 
     def post(self, shared, prep_res, exec_res):
         shared["final_output_dir"] = exec_res  # Store the output path
         print(f"\nTutorial generation complete! Files are in: {exec_res}")
+
+
+class AnswerQuestions(Node):
+    def __init__(self):
+        super().__init__()
+        self.knowledge_base = KnowledgeBaseManager()
+
+    def prep(self, shared):
+        """Prepare context for answering questions."""
+        questions = shared.get("questions", [])
+        if not questions:
+            return None  # Skip if no questions
+
+        # Collect context from prior nodes
+        context = {
+            "files": shared["files"],
+            "abstractions": shared["abstractions"],
+            "relationships": shared["relationships"],
+            "project_name": shared["project_name"],
+        }
+        
+        return {
+            "questions": questions,
+            "context": context
+        }
+
+    def exec(self, prep_res):
+        """Process questions and generate answers."""
+        if not prep_res:
+            return None
+
+        # Process questions using knowledge base manager
+        self.knowledge_base.process_questions(
+            questions=prep_res["questions"],
+            context=prep_res["context"]
+        )
+        
+        return self.knowledge_base
+
+    def post(self, shared, prep_res, exec_res):
+        """Store knowledge base in shared context."""
+        if exec_res:
+            shared["knowledge_base"] = exec_res
