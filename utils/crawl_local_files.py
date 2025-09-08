@@ -32,7 +32,7 @@ def crawl_local_files(
     gitignore_spec = None
     if os.path.exists(gitignore_path):
         try:
-            with open(gitignore_path, "r", encoding="utf-8") as f:
+            with open(gitignore_path, "r", encoding="utf-8-sig") as f:
                 gitignore_patterns = f.readlines()
             gitignore_spec = pathspec.PathSpec.from_lines("gitwildmatch", gitignore_patterns)
             print(f"Loaded .gitignore patterns from {gitignore_path}")
@@ -113,7 +113,7 @@ def crawl_local_files(
 
         # --- File is being processed ---        
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, "r", encoding="utf-8-sig") as f:
                 content = f.read()
             files_dict[relpath] = content
         except Exception as e:

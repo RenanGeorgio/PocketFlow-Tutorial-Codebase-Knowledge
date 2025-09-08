@@ -15,7 +15,7 @@ log_file = os.path.join(
 logger = logging.getLogger("llm_logger")
 logger.setLevel(logging.INFO)
 logger.propagate = False  # Prevent propagation to root logger
-file_handler = logging.FileHandler(log_file)
+file_handler = logging.FileHandler(log_file, encoding='utf-8')
 file_handler.setFormatter(
     logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 )
@@ -36,7 +36,7 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
         cache = {}
         if os.path.exists(cache_file):
             try:
-                with open(cache_file, "r") as f:
+                with open(cache_file, "r", encoding="utf-8") as f:
                     cache = json.load(f)
             except:
                 logger.warning(f"Failed to load cache, starting with empty cache")
@@ -58,8 +58,8 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
     client = genai.Client(
         api_key=os.getenv("GEMINI_API_KEY", ""),
     )
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25")
-    # model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-04-17")
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+    # model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     
     response = client.models.generate_content(model=model, contents=[prompt])
     response_text = response.text
@@ -73,7 +73,7 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
         cache = {}
         if os.path.exists(cache_file):
             try:
-                with open(cache_file, "r") as f:
+                with open(cache_file, "r", encoding="utf-8") as f:
                     cache = json.load(f)
             except:
                 pass
@@ -81,13 +81,41 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
         # Add to cache and save
         cache[prompt] = response_text
         try:
-            with open(cache_file, "w") as f:
+            with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump(cache, f)
         except Exception as e:
             logger.error(f"Failed to save cache: {e}")
 
     return response_text
 
+
+# # Use Azure OpenAI
+# def call_llm(prompt, use_cache: bool = True):
+#     from openai import AzureOpenAI
+
+#     endpoint = "https://<azure openai name>.openai.azure.com/"
+#     deployment = "<deployment name>"
+
+#     subscription_key = "<azure openai key>"
+#     api_version = "<api version>"
+
+#     client = AzureOpenAI(
+#         api_version=api_version,
+#         azure_endpoint=endpoint,
+#         api_key=subscription_key,
+#     )
+
+#     r = client.chat.completions.create(
+#         model=deployment,
+#         messages=[{"role": "user", "content": prompt}],
+#         response_format={
+#             "type": "text"
+#         },
+#         max_completion_tokens=40000,
+#         reasoning_effort="medium",
+#         store=False
+#     )
+#     return r.choices[0].message.content
 
 # # Use Anthropic Claude 3.7 Sonnet Extended Thinking
 # def call_llm(prompt, use_cache: bool = True):
@@ -123,6 +151,7 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
 
 # Use OpenRouter API
 # def call_llm(prompt: str, use_cache: bool = True) -> str:
+#     import requests
 #     # Log the prompt
 #     logger.info(f"PROMPT: {prompt}")
 
@@ -132,7 +161,7 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
 #         cache = {}
 #         if os.path.exists(cache_file):
 #             try:
-#                 with open(cache_file, "r") as f:
+#                 with open(cache_file, "r", encoding="utf-8") as f:
 #                     cache = json.load(f)
 #             except:
 #                 logger.warning(f"Failed to load cache, starting with empty cache")
@@ -182,7 +211,7 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
 #         cache = {}
 #         if os.path.exists(cache_file):
 #             try:
-#                 with open(cache_file, "r") as f:
+#                 with open(cache_file, "r", encoding="utf-8") as f:
 #                     cache = json.load(f)
 #             except:
 #                 pass
@@ -190,7 +219,7 @@ def call_llm(prompt: str, use_cache: bool = True) -> str:
 #         # Add to cache and save
 #         cache[prompt] = response_text
 #         try:
-#             with open(cache_file, "w") as f:
+#             with open(cache_file, "w", encoding="utf-8") as f:
 #                 json.dump(cache, f)
 #         except Exception as e:
 #             logger.error(f"Failed to save cache: {e}")

@@ -104,7 +104,7 @@ def crawl_github_files(
 
                     # Read content
                     try:
-                        with open(abs_path, "r", encoding="utf-8") as f:
+                        with open(abs_path, "r", encoding="utf-8-sig") as f:
                             content = f.read()
                         files[rel_path] = content
                         print(f"Added {rel_path} ({file_size} bytes)")
@@ -144,7 +144,7 @@ def crawl_github_files(
         """Get brancshes of the repository"""
 
         url = f"https://api.github.com/repos/{owner}/{repo}/branches"
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=(30, 30))
 
         if response.status_code == 404:
             if not token:
@@ -165,7 +165,7 @@ def crawl_github_files(
         """Check the repository has the given tree"""
 
         url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{tree}"
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=(30, 30))
 
         return True if response.status_code == 200 else False 
 
@@ -216,7 +216,7 @@ def crawl_github_files(
         url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
         params = {"ref": ref} if ref != None else {}
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=(30, 30))
         
         if response.status_code == 403 and 'rate limit exceeded' in response.text.lower():
             reset_time = int(response.headers.get('X-RateLimit-Reset', 0))
@@ -276,7 +276,7 @@ def crawl_github_files(
                 # For files, get raw content
                 if "download_url" in item and item["download_url"]:
                     file_url = item["download_url"]
-                    file_response = requests.get(file_url, headers=headers)
+                    file_response = requests.get(file_url, headers=headers, timeout=(30, 30))
                     
                     # Final size check in case content-length header is available but differs from metadata
                     content_length = int(file_response.headers.get('content-length', 0))
@@ -292,7 +292,7 @@ def crawl_github_files(
                         print(f"Failed to download {rel_path}: {file_response.status_code}")
                 else:
                     # Alternative method if download_url is not available
-                    content_response = requests.get(item["url"], headers=headers)
+                    content_response = requests.get(item["url"], headers=headers, timeout=(30, 30))
                     if content_response.status_code == 200:
                         content_data = content_response.json()
                         if content_data.get("encoding") == "base64" and "content" in content_data:
@@ -312,7 +312,19 @@ def crawl_github_files(
                         print(f"Failed to get content for {rel_path}: {content_response.status_code}")
             
             elif item["type"] == "dir":
-                # Recursively process subdirectories
+                # OLD IMPLEMENTATION (comment this block to test new implementation)
+                # Always recurse into directories without checking exclusions first
+                # fetch_contents(item_path)
+
+                # NEW IMPLEMENTATION (uncomment this block to test optimized version)
+                # # Check if directory should be excluded before recursing
+                if exclude_patterns:
+                    dir_excluded = any(fnmatch.fnmatch(item_path, pattern) or
+                                    fnmatch.fnmatch(rel_path, pattern) for pattern in exclude_patterns)
+                    if dir_excluded:
+                        continue
+                
+                # # Only recurse if directory is not excluded
                 fetch_contents(item_path)
     
     # Start crawling from the specified path

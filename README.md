@@ -18,7 +18,9 @@ This is a tutorial project of [Pocket Flow](https://github.com/The-Pocket/Pocket
 
 - Check out the [Substack Post Tutorial](https://zacharyhuang.substack.com/p/ai-codebase-knowledge-builder-full) for more!
 
-&nbsp;&nbsp;**🔸 🎉 Reached Hacker News Front Page** (April 2025) with >800 up‑votes:  [Discussion »](https://news.ycombinator.com/item?id=43739456)
+&nbsp;&nbsp;**🔸 🎉 Reached Hacker News Front Page** (April 2025) with >900 up‑votes:  [Discussion »](https://news.ycombinator.com/item?id=43739456)
+
+&nbsp;&nbsp;**🔸 🎊 Online Service Now Live!** (May&nbsp;2025) Try our new online version at [https://code2tutorial.com/](https://code2tutorial.com/) – just paste a GitHub link, no installation needed!
 
 ## ⭐ Example Results for Popular GitHub Repositories!
 
@@ -122,6 +124,44 @@ This is a tutorial project of [Pocket Flow](https://github.com/The-Pocket/Pocket
 
 The application will crawl the repository, analyze the codebase structure, generate tutorial content in the specified language, and save the output in the specified directory (default: ./output).
 
+
+<details>
+ 
+<summary> 🐳 <b>Running with Docker</b> </summary>
+
+To run this project in a Docker container, you'll need to pass your API keys as environment variables. 
+
+1. Build the Docker image
+   ```bash
+   docker build -t pocketflow-app .
+   ```
+
+2. Run the container
+
+   You'll need to provide your `GEMINI_API_KEY` for the LLM to function. If you're analyzing private GitHub repositories or want to avoid rate limits, also provide your `GITHUB_TOKEN`.
+   
+   Mount a local directory to `/app/output` inside the container to access the generated tutorials on your host machine.
+   
+   **Example for analyzing a public GitHub repository:**
+   
+   ```bash
+   docker run -it --rm \
+     -e GEMINI_API_KEY="YOUR_GEMINI_API_KEY_HERE" \
+     -v "$(pwd)/output_tutorials":/app/output \
+     pocketflow-app --repo https://github.com/username/repo
+   ```
+   
+   **Example for analyzing a local directory:**
+   
+   ```bash
+   docker run -it --rm \
+     -e GEMINI_API_KEY="YOUR_GEMINI_API_KEY_HERE" \
+     -v "/path/to/your/local_codebase":/app/code_to_analyze \
+     -v "$(pwd)/output_tutorials":/app/output \
+     pocketflow-app --dir /app/code_to_analyze
+   ```
+</details>
+
 ## 💡 Development Tutorial
 
 - I built using [**Agentic Coding**](https://zacharyhuang.substack.com/p/agentic-coding-the-most-fun-way-to), the fastest development paradigm, where humans simply [design](docs/design.md) and agents [code](flow.py).
@@ -137,3 +177,6 @@ The application will crawl the repository, analyze the codebase structure, gener
   </a>
 </div>
 <br>
+
+
+
